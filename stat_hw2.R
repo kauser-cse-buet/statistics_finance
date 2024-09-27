@@ -6,10 +6,14 @@ library(moments)
 library(pdfetch)
 library(graphics)
 library(psych)
-
 library(tidyquant)
 library(zoo)
 library(corrplot)
+library(tidyverse)
+library(glue)
+library(dplyr)
+library(lubridate)
+
 options(digits=4)
 
 "
@@ -284,42 +288,43 @@ print(cor_mat)
 2.	Based on returns for equity and market index. Use two factor models (time series regression) to compute the alpha estimation of all equities. The two factor models are the market model (CAPM model) and Fama-French 5 factor separately. 
 '
 
-get_alpha_t_ratios <- function(returns){
-    returns <- ret.x
+get_alpha_t_ratios <- function(returns, stock_names, independent_vars = c('GSPC')){
     summary(returns)
-    column_names = colnames(returns)
-    stock_names = head(column_names, -2)
-    market_premium = tail(column_names, 2)[1]
-    date_column_name = tail(column_names, 2)[2]
-    attr_mat = matrix(nrow=length(stock_names), ncol=4)
-    colnames(attr_mat) = c("alpha", "t_alpha", "beta", "t_beta")
+    no_of_coefficients = (length(independent_vars) + 1)
+    attr_mat = matrix(nrow=length(stock_names), ncol=2)
+    colnames(attr_mat) = c("alpha", "t_alpha")
     rownames(attr_mat) = stock_names
     
     for (i in 1: length(stock_names)){
         stock_name = stock_names[i]
         print(stock_name)
-        data = returns[,c(stock_name, market_premium, date_column_name)]
+        data = returns[,c(stock_name, independent_vars)]
+        
+        formula_str <- paste(stock_name, '~', paste(independent_vars, collapse = "+"))
         par(mfrow=c(1,1))
         plot(data[, -3], main="Scatter plot")    # scatter plot
-        abline(lm(data[[stock_name]]~data[[market_premium]],data=data))
+        
+        abline(lm(formula_str,data=data))
         
         
         ##Regression analysis
-        fit<-lm(data[[stock_name]]~data[[market_premium]], data=data)
-        summary(fit)
+        # independent_vars <- c('GSPC', 'SMB', 'HML', 'RMW', 'CMA')
+        
+        
+        fit<-lm(formula_str, data=data)
+        print(summary(fit))
         
         attr_mat[stock_name, 'alpha'] = summary(fit)$coefficients["(Intercept)", "Estimate"]
-        attr_mat[stock_name, 'beta'] = summary(fit)$coefficients["data[[market_premium]]", "Estimate"]
-        
         attr_mat[stock_name, 't_alpha'] = summary(fit)$coefficients["(Intercept)", "t value"]
-        attr_mat[stock_name, 't_beta'] = summary(fit)$coefficients["data[[market_premium]]", "t value"]
     }
     
-    return(attr_mat['alpha', 't_alpha'])
+    return(attr_mat)
 }
 
 # get list of alpha and t ratios of corresponding alphas.
-alpha_t_ratios <- get_alpha_beta_t_value(na.omit(ret.x))
+alpha_t_ratios <- get_alpha_t_ratios(ret.x, 
+                                     stock_names=head(colnames(ret.x), -2),
+                                     independent_vars = c('GSPC'))
 
 # create histogram of t ratios of alphas
 hist(alpha_t_ratios[, 't_alpha'], xlab = "t-ratios", main = "Frequency distribution of Stock Alphas")
@@ -327,18 +332,78 @@ hist(alpha_t_ratios[, 't_alpha'], xlab = "t-ratios", main = "Frequency distribut
 
 '4.	From the step 3, identify how many assets outperform significantly at 5% of alpha level.'
 # Stock data contains  1 GSPC (Market premium) and 1 IRX
-no_of_stock = length(stock_names) - 2
-degree_of_freedom = no_of_stock - 2
-significance_level = 5/100
+get_outperming_stock_analysis <- function(no_of_stock, significance_level_perc, alpha_t_ratios){
+    degree_of_freedom = no_of_stock - 2
+    significance_level = significance_level_perc/100
+    
+    t_ratio_at_sig_level = qt(p = 1 - significance_level, df = degree_of_freedom)
+    print(paste("T ratio at sigficance level", significance_level, ":", t_ratio_at_sig_level))
+    
+    t_ratio_out_performing = alpha_t_ratios[alpha_t_ratios[, 't_alpha'] > t_ratio_at_sig_level, 't_alpha']
+    print(paste("Number of assets outperform significantly at", significance_level * 100, "%", ":", length(t_ratio_out_performing)))
+    print("Outperming shares are given below:")
+    print(names(t_ratio_out_performing))
+}
 
-t_ratio_at_sig_level = qt(p = 1 - significance_level, df = no_of_stock - 2)
-print(paste("T ratio at sigficance level", significance_level, ":", t_ratio_at_sig_level))
-
-t_ratio_out_performing = alpha_t_ratios[alpha_t_ratios[, 't_alpha'] > t_ratio_at_sig_level, 't_alpha']
-print(paste("Number of assets outperform significantly at", significance_level * 100, "%", ":", length(t_ratio_out_performing)))
-names(t_ratio_out_performing)
+get_outperming_stock_analysis(no_of_stock=length(stock_names) - 2, 
+                              significance_level_perc=5, 
+                              alpha_t_ratios=alpha_t_ratios)
 
 
+
+# Fama-French 5 factor:
+temp = tempfile()
+base = "http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+factor = "F-F_Research_Data_5_Factors_2x3_daily"
+format =  "_TXT.zip"
+full_url =  glue(base, factor,  format,  sep ="")
+
+#Now we pass full_url to download.file().
+download.file(full_url,temp,quiet = TRUE)
+
+#Finally, we can read the txt file using read_table() after unzipping that data with the unz() function.
+
+ff_5factors =  read.table(unz(temp,"F-F_Research_Data_5_Factors_2x3_daily.txt"),
+                          skip = 4, header=TRUE)
+head(ff_5factors)
+
+
+colnames(ff_5factors) = c("date_epoch","Mkt-RF","SMB","HML","RMW","CMA","RF")
+
+ff_5factors <- ff_5factors %>%
+    mutate(date = ff_5factors[, 'date_epoch']) %>%
+    mutate(date = ymd(parse_date_time(date,"%y%m%d"))+days(2))
+
+
+
+ff_all <- 
+    ret.x %>% 
+    left_join(ff_5factors, by = "date")
+
+ff_all <-na.omit(ff_all)
+
+ff_all <- ff_all %>%
+    mutate(SMB=as.numeric(as.character(SMB)),
+           HML=as.numeric(as.character(HML)),
+           RMW=as.numeric(as.character(RMW)),
+           CMA=as.numeric(as.character(CMA)),
+           RF=as.numeric(as.character(RF))
+           )
+
+head(ff_all)
+summary(ff_all)
+
+# get list of alpha and t ratios of corresponding alphas.
+ff5_alpha_t_ratios <- get_alpha_t_ratios(ff_all, 
+                                     stock_names=head(colnames(ret.x), -2),
+                                     independent_vars = c('GSPC', 'SMB', 'HML', 'RMW', 'CMA'))
+
+# create histogram of t ratios of alphas
+hist(ff5_alpha_t_ratios[, 't_alpha'], xlab = "t-ratios", main = "Frequency distribution of Stock Alphas")
+
+get_outperming_stock_analysis(no_of_stock=length(stock_names) - 2, 
+                              significance_level_perc=5, 
+                              alpha_t_ratios=ff5_alpha_t_ratios)
 
 
 

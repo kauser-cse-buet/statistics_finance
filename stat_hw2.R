@@ -1,4 +1,5 @@
 install.packages("tidyquant")
+install.packages("corrplot")
 
 # Add required libraries
 library(moments) 
@@ -8,6 +9,7 @@ library(psych)
 
 library(tidyquant)
 library(zoo)
+library(corrplot)
 options(digits=4)
 
 "
@@ -54,8 +56,15 @@ tickers <- c(
     "WMT", # Walmart
     "PFE", # Pfizer Inc. (PFE) - Healthcare
     "PEP", # PepsiCo Inc. (PEP) - Consumer Staples
+#    "SPAXX", # Fidelity Government Money Market Fund"
     "^GSPC",
     "^IRX")
+
+
+get_data <- function(from_file=FALSE){
+    
+    
+}
 
 stock_names = getSymbols(tickers, from = '2018-01-01',
            to = "2024-01-01",
@@ -197,3 +206,139 @@ show_plots <- function(dat, is_save = FALSE, plot_types=c("box", "qq")){
 
 # show_plots(st_data)
 show_plots(st_data, plot_types=c("qq"), is_save = FALSE)
+
+
+
+
+plot_hist <- function(dat, is_save = FALSE){
+    names = colnames(dat)
+    par(mfrow=c(2,2))
+    for (i in 1:length(names))
+    {
+        plt_label = paste(names[i], "return distribution")
+        st_retrun_values = dat[, names[i]]
+        if (is_save){
+            dir_name = "hist"
+            dir.create(dir_name)
+            hist_density_dist_curve_fn = paste(dir_name, "/", "hist-return-dist-", names[i], ".pdf", sep="")
+            print(hist_density_dist_curve_fn)
+            pdf(file=hist_density_dist_curve_fn)
+            
+            hist(st_retrun_values,prob=T,breaks=50,main=plt_label, xlab = "")
+            curve(dnorm(x,mean=mean(st_retrun_values),sd=sd(st_retrun_values)),add=T,col="red", main=plt_label)
+            dev.off()    
+        }
+        else{
+            hist(st_retrun_values,prob=T,breaks=50,main=plt_label, xlab = "")
+            curve(dnorm(x,mean=mean(st_retrun_values),sd=sd(st_retrun_values)),add=T,col="red", main=plt_label)
+        }
+    }   
+    
+    
+}
+
+
+
+# correlation analysis
+analyze_and_get_correlation <- function(dat, is_save = FALSE){
+    cor_mat = cor(dat)
+    if (is_save){
+        dir_name = "correlation2"
+        dir.create(dir_name)
+        plot_fn = paste(dir_name, "/", "correlation-analysis", names[i], ".pdf", sep="")
+        print(plot_fn)
+        pdf(file=plot_fn)
+        corrplot(cor_mat, method = "circle", type = "upper")
+        dev.off()
+    }
+    else{
+        corrplot(cor_mat, method = "circle", type = "upper")
+        
+    }
+    return(cor_mat)
+}
+
+
+
+# calculate returns in log scale, excluding IRX
+ret=diff(log(st_data[, -20])) * 100
+# omit na values
+#ret_no_na = na.omit(ret)
+
+rf = as.vector(st_data[-1, 'IRX']/100/253)*100
+
+ret.x <- as.data.frame(ret-rf)
+ret.x$date <- as.Date(as.numeric(row.names(as.data.frame(st_data[-1, ]))))
+
+
+
+plot_hist(na.omit(ret))
+
+
+
+cor_mat = analyze_and_get_correlation(ret_no_na)
+print("Correlation Matrix")
+print(cor_mat)
+
+'
+2.	Based on returns for equity and market index. Use two factor models (time series regression) to compute the alpha estimation of all equities. The two factor models are the market model (CAPM model) and Fama-French 5 factor separately. 
+'
+
+get_alpha_t_ratios <- function(returns){
+    returns <- ret.x
+    summary(returns)
+    column_names = colnames(returns)
+    stock_names = head(column_names, -2)
+    market_premium = tail(column_names, 2)[1]
+    date_column_name = tail(column_names, 2)[2]
+    attr_mat = matrix(nrow=length(stock_names), ncol=4)
+    colnames(attr_mat) = c("alpha", "t_alpha", "beta", "t_beta")
+    rownames(attr_mat) = stock_names
+    
+    for (i in 1: length(stock_names)){
+        stock_name = stock_names[i]
+        print(stock_name)
+        data = returns[,c(stock_name, market_premium, date_column_name)]
+        par(mfrow=c(1,1))
+        plot(data[, -3], main="Scatter plot")    # scatter plot
+        abline(lm(data[[stock_name]]~data[[market_premium]],data=data))
+        
+        
+        ##Regression analysis
+        fit<-lm(data[[stock_name]]~data[[market_premium]], data=data)
+        summary(fit)
+        
+        attr_mat[stock_name, 'alpha'] = summary(fit)$coefficients["(Intercept)", "Estimate"]
+        attr_mat[stock_name, 'beta'] = summary(fit)$coefficients["data[[market_premium]]", "Estimate"]
+        
+        attr_mat[stock_name, 't_alpha'] = summary(fit)$coefficients["(Intercept)", "t value"]
+        attr_mat[stock_name, 't_beta'] = summary(fit)$coefficients["data[[market_premium]]", "t value"]
+    }
+    
+    return(attr_mat['alpha', 't_alpha'])
+}
+
+# get list of alpha and t ratios of corresponding alphas.
+alpha_t_ratios <- get_alpha_beta_t_value(na.omit(ret.x))
+
+# create histogram of t ratios of alphas
+hist(alpha_t_ratios[, 't_alpha'], xlab = "t-ratios", main = "Frequency distribution of Stock Alphas")
+
+
+'4.	From the step 3, identify how many assets outperform significantly at 5% of alpha level.'
+# Stock data contains  1 GSPC (Market premium) and 1 IRX
+no_of_stock = length(stock_names) - 2
+degree_of_freedom = no_of_stock - 2
+significance_level = 5/100
+
+t_ratio_at_sig_level = qt(p = 1 - significance_level, df = no_of_stock - 2)
+print(paste("T ratio at sigficance level", significance_level, ":", t_ratio_at_sig_level))
+
+t_ratio_out_performing = alpha_t_ratios[alpha_t_ratios[, 't_alpha'] > t_ratio_at_sig_level, 't_alpha']
+print(paste("Number of assets outperform significantly at", significance_level * 100, "%", ":", length(t_ratio_out_performing)))
+names(t_ratio_out_performing)
+
+
+
+
+
